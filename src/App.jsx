@@ -5,88 +5,96 @@ const COLLECTION = 'tasks';
 
 function useTasks() {
   const [tasks, setTasks] = useState([]);
-  const isLoaded = useRef(false);
+  const isMounted = useRef(false);
 
   useEffect(() => {
     const stored = localStorage.getItem(COLLECTION);
     if (stored) {
       try {
         setTasks(JSON.parse(stored));
-      } catch (e) {
-        /* ignore parse error */
-      }
+      } catch (e) { /* ignore parse error */ }
     }
 
     const apiBase = window.API_BASE;
-    if (!apiBase) {
-      isLoaded.current = true;
-      return;
+    if (apiBase) {
+      fetch(apiBase + '/api/store/' + COLLECTION)
+        .then(res => res.json())
+        .then(data => {
+          if (Array.isArray(data)) {
+            setTasks(data);
+            localStorage.setItem(COLLECTION, JSON.stringify(data));
+          }
+        })
+        .catch(() => {});
     }
 
-    fetch(apiBase + '/api/store/' + COLLECTION)
-      .then(res => {
-        if (!res.ok) throw new Error('Network error');
-        return res.json();
-      })
-      .then(data => {
-        setTasks(data);
-        localStorage.setItem(COLLECTION, JSON.stringify(data));
-      })
-      .catch(() => {})
-      .finally(() => {
-        isLoaded.current = true;
-      });
+    isMounted.current = true;
   }, []);
 
-  const persist = (updated) => {
-    setTasks(updated);
-    localStorage.setItem(COLLECTION, JSON.stringify(updated));
-  };
+  useEffect(() => {
+    if (isMounted.current) {
+      localStorage.setItem(COLLECTION, JSON.stringify(tasks));
+    }
+  }, [tasks]);
+
+  const apiBase = window.API_BASE;
 
   const addTask = async (title) => {
-    const record = { title, done: false, createdAt: Date.now() };
-    const apiBase = window.API_BASE;
+    const newTask = { title, done: false, createdAt: Date.now() };
+    const tempId = 'temp_' + Date.now();
+    const optimisticTask = { id: tempId, ...newTask };
+    setTasks(prev => [optimisticTask, ...prev]);
+
     if (apiBase) {
       try {
         const res = await fetch(apiBase + '/api/store/' + COLLECTION, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ data: record })
+          body: JSON.stringify({ data: newTask })
         });
         const saved = await res.json();
-        persist([...tasks, saved]);
-        return;
-      } catch (e) { /* fallback local */ }
+        setTasks(prev => prev.map(t => t.id === tempId ? saved : t));
+      } catch (err) {
+        /* fallback to local state */
+      }
     }
-    const local = { ...record, id: 'local_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9) };
-    persist([...tasks, local]);
   };
 
   const toggleTask = async (id) => {
-    const idx = tasks.findIndex(t => t.id === id);
-    if (idx === -1) return;
-    const updated = [...tasks];
-    updated[idx] = { ...updated[idx], done: !updated[idx].done };
-    persist(updated);
-    const apiBase = window.API_BASE;
-    if (apiBase) {
+    let updatedTask = null;
+    setTasks(prev => prev.map(t => {
+      if (t.id === id) {
+        updatedTask = { ...t, done: !t.done };
+        return updatedTask;
+      }
+      return t;
+    }));
+
+    if (apiBase && updatedTask) {
       try {
+        const { id, ...data } = updatedTask;
         await fetch(apiBase + '/api/store/' + COLLECTION + '/' + id, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ data: updated[idx] })
+          body: JSON.stringify({ data })
         });
-      } catch (e) { /* ignore */ }
+      } catch (err) {
+        /* fallback to local state */
+      }
     }
   };
 
   const deleteTask = async (id) => {
-    persist(tasks.filter(t => t.id !== id));
-    const apiBase = window.API_BASE;
+    setTasks(prev => prev.filter(t => t.id !== id));
+
     if (apiBase) {
       try {
-        await fetch(apiBase + '/api/store/' + COLLECTION + '/' + id, { method: 'DELETE' });
-      } catch (e) { /* ignore */ }
+        await fetch(apiBase + '/api/store/' + COLLECTION + '/' + id, {
+          method: 'DELETE'
+        });
+      } catch (err) {
+        /* fallback to local state */
+      }
     }
   };
 
@@ -99,159 +107,143 @@ function TopBar() {
       <div className="container row">
         <Link to="/" className="nav brand">Quick To-Do</Link>
         <nav className="nav">
-          <NavLink to="/" end className={({ isActive }) => isActive ? 'nav link active' : 'nav link'}>All</NavLink>
-          <NavLink to="/active" className={({ isActive }) => isActive ? 'nav link active' : 'nav link'}>Active</NavLink>
-          <NavLink to="/done" className={({ isActive }) => isActive ? 'nav link active' : 'nav link'}>Done</NavLink>
+          <NavLink to="/" end className={({ isActive }) => isActive ? 'btn btn-primary' : 'btn'}>Home</NavLink>
         </nav>
       </div>
     </header>
   );
 }
 
+function Hero() {
+  return (
+    <section className="hero center">
+      <h1>Quick To-Do</h1>
+      <p className="muted">Stay organized. Get things done.</p>
+    </section>
+  );
+}
+
 function TaskInput({ onAdd }) {
-  const [value, setValue] = useState('');
+  const [title, setTitle] = useState('');
   const inputRef = useRef(null);
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    const trimmed = value.trim();
-    if (!trimmed) return;
-    onAdd(trimmed);
-    setValue('');
-    inputRef.current && inputRef.current.focus();
+    const trimmed = title.trim();
+    if (trimmed) {
+      onAdd(trimmed);
+      setTitle('');
+      if (inputRef.current) inputRef.current.focus();
+    }
   };
 
   return (
-    <form className="row task-input" onSubmit={handleSubmit}>
+    <form className="row card box" onSubmit={handleSubmit}>
       <input
         ref={inputRef}
         className="input"
         type="text"
         placeholder="What needs to be done?"
-        value={value}
-        onChange={e => setValue(e.target.value)}
-        aria-label="New task title"
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
       />
       <button className="btn btn-primary" type="submit">Add</button>
     </form>
   );
 }
 
-function TaskItem({ task, onToggle, onDelete }) {
-  const imgId = (parseInt(task.id.replace(/\D/g, ''), 10) % 70) + 1;
-  const avatarUrl = `https://i.pravatar.cc/300?img=${imgId}`;
-  const fallbackUrl = `https://picsum.photos/seed/${encodeURIComponent(task.id)}/40/40`;
-
-  const handleImgError = (e) => {
-    e.target.onerror = null;
-    e.target.src = fallbackUrl;
-  };
+function FilterBar({ filter, setFilter, counts }) {
+  const filters = ['All', 'Active', 'Done'];
 
   return (
-    <li className="list-item task-item">
+    <div className="row card box">
+      {filters.map(f => (
+        <button
+          key={f}
+          className={filter === f ? 'btn btn-primary' : 'btn'}
+          onClick={() => setFilter(f)}
+        >
+          {f}
+          <span className="pill">{f === 'All' ? counts.all : f === 'Active' ? counts.active : counts.done}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function TaskItem({ task, onToggle, onDelete }) {
+  const imgId = (task.id.charCodeAt(0) % 70) + 1;
+  const fallback = `https://picsum.photos/seed/${task.id}/40/40`;
+
+  return (
+    <div className="list-item row card box">
       <img
-        className="avatar task-avatar"
-        src={avatarUrl}
-        alt=""
-        onError={handleImgError}
+        className="avatar"
+        src={`https://i.pravatar.cc/300?img=${imgId}`}
+        alt="avatar"
+        onError={(e) => { e.target.src = fallback; }}
       />
-      <label className={`field task-label ${task.done ? 'done muted' : ''}`}>
-        <input
-          type="checkbox"
-          className="task-checkbox"
-          checked={task.done}
-          onChange={() => onToggle(task.id)}
-          aria-label={`Mark ${task.title} as ${task.done ? 'active' : 'done'}`}
-        />
-        <span className="task-title">{task.title}</span>
-      </label>
-      {task.done && <span className="pill badge-done">Done</span>}
-      {!task.done && <span className="pill badge-active">Active</span>}
-      <button className="btn btn-delete" onClick={() => onDelete(task.id)} aria-label="Delete task">✕</button>
-    </li>
+      <span className={task.done ? 'muted' : 'primary'} style={{ textDecoration: task.done ? 'line-through' : 'none', flex: 1 }}>
+        {task.title}
+      </span>
+      {task.done && <span className="badge">Done</span>}
+      <button className="btn" onClick={() => onToggle(task.id)}>
+        {task.done ? '↩ Undo' : '✓ Done'}
+      </button>
+      <button className="btn" onClick={() => onDelete(task.id)}>
+        ✕
+      </button>
+    </div>
   );
 }
 
 function TaskList({ tasks, onToggle, onDelete }) {
   if (tasks.length === 0) {
     return (
-      <div className="center box empty-state">
+      <div className="card box center">
         <p className="muted">No tasks here. Add one above!</p>
       </div>
     );
   }
 
   return (
-    <ul className="list">
+    <div className="list">
       {tasks.map(task => (
-        <TaskItem key={task.id} task={task} onToggle={onToggle} onDelete={onDelete} />
+        <TaskItem
+          key={task.id}
+          task={task}
+          onToggle={onToggle}
+          onDelete={onDelete}
+        />
       ))}
-    </ul>
-  );
-}
-
-function Stats({ tasks }) {
-  const total = tasks.length;
-  const done = tasks.filter(t => t.done).length;
-  const active = total - done;
-
-  return (
-    <div className="row stats">
-      <div className="stat box">
-        <span className="stat-number">{total}</span>
-        <span className="muted">Total</span>
-      </div>
-      <div className="stat box">
-        <span className="stat-number primary">{active}</span>
-        <span className="muted">Active</span>
-      </div>
-      <div className="stat box">
-        <span className="stat-number">{done}</span>
-        <span className="muted">Done</span>
-      </div>
     </div>
   );
 }
 
-function TaskPage({ filter }) {
+function HomePage() {
   const { tasks, addTask, toggleTask, deleteTask } = useTasks();
+  const [filter, setFilter] = useState('All');
 
-  const filtered = useMemo(() => {
-    if (filter === 'active') return tasks.filter(t => !t.done);
-    if (filter === 'done') return tasks.filter(t => t.done);
+  const filteredTasks = useMemo(() => {
+    if (filter === 'Active') return tasks.filter(t => !t.done);
+    if (filter === 'Done') return tasks.filter(t => t.done);
     return tasks;
   }, [tasks, filter]);
 
-  const heading = filter === 'active' ? 'Active Tasks' : filter === 'done' ? 'Completed Tasks' : 'All Tasks';
+  const counts = useMemo(() => ({
+    all: tasks.length,
+    active: tasks.filter(t => !t.done).length,
+    done: tasks.filter(t => t.done).length
+  }), [tasks]);
 
   return (
     <div className="container wrap">
-      <div className="hero">
-        <h1 className="hero-title">Quick To-Do</h1>
-        <p className="muted hero-sub">Stay organized, get things done.</p>
-      </div>
-
+      <Hero />
       <TaskInput onAdd={addTask} />
-      <Stats tasks={tasks} />
-
-      <div className="card">
-        <h2 className="card-title">{heading}</h2>
-        <TaskList tasks={filtered} onToggle={toggleTask} onDelete={deleteTask} />
-      </div>
+      <FilterBar filter={filter} setFilter={setFilter} counts={counts} />
+      <TaskList tasks={filteredTasks} onToggle={toggleTask} onDelete={deleteTask} />
     </div>
   );
-}
-
-function AllPage() {
-  return <TaskPage filter="all" />;
-}
-
-function ActivePage() {
-  return <TaskPage filter="active" />;
-}
-
-function DonePage() {
-  return <TaskPage filter="done" />;
 }
 
 export default function App() {
@@ -259,14 +251,10 @@ export default function App() {
     <HashRouter>
       <div className="app">
         <TopBar />
-        <main className="main">
-          <Routes>
-            <Route path="/" element={<AllPage />} />
-            <Route path="/active" element={<ActivePage />} />
-            <Route path="/done" element={<DonePage />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </main>
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
       </div>
     </HashRouter>
   );
